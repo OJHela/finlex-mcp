@@ -539,17 +539,17 @@ def fetch_doc_xml(
     return r.text
 
 
-def format_result(parsed: dict) -> str:
+def format_result(parsed: dict, next_call: str = "") -> str:
     """Format a parsed AKN result into a clean string for the MCP tool response."""
     if "error" in parsed:
-        return f"Virhe: {parsed['error']}"
+        return f"ERROR: {parsed['error']}"
     text = parsed.get("text", "")
     chunk = parsed.get("chunk", 1)
     total_chunks = parsed.get("total_chunks", 1)
-    total_length = parsed.get("total_length", len(text))
     if total_chunks > 1:
-        text += (
-            f"\n\n[OSA {chunk}/{total_chunks} | Dokumentin kokonaispituus: {total_length} merkkiä"
-            f" | Hae seuraava osa: lisää parametri chunk={chunk + 1}]"
-        )
+        if chunk < total_chunks:
+            continuation = f" | NEXT: {next_call}" if next_call else ""
+            text += f"\n\n[PART {chunk}/{total_chunks}{continuation}]"
+        else:
+            text += f"\n\n[PART {chunk}/{total_chunks} — END]"
     return text

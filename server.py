@@ -24,11 +24,10 @@ from starlette.responses import JSONResponse, PlainTextResponse
 load_dotenv()
 
 from tools_finlex import (
-    get_decision_text,
-    get_government_proposal,
-    get_statute_by_citation,
-    get_statute_text,
-    search_case_law,
+    get_decision,
+    get_proposal,
+    get_statute,
+    search_decisions,
     search_statutes,
 )
 
@@ -61,26 +60,21 @@ icon = Icon(
     src="https://raw.githubusercontent.com/SimonBerg255/finlex-mcp/main/icon.png",
 )
 
-INSTRUCTION_STRING = """Olet yhteydessä Finlexiin – Suomen oikeudelliseen tietopankkiin, jota ylläpitää oikeusministeriö.
+INSTRUCTION_STRING = """Finlex – Finnish legal database (opendata.finlex.fi, CC BY 4.0).
 
-Voit hakea:
-- Säädöksiä: Suomen lait ja asetukset vuosi- ja numerotunnisteen perusteella
-- Oikeusratkaisuja: Oikeuskanslerin ratkaisut (OKV) ja Tietosuojavaltuutetun päätökset
-- Hallituksen esityksiä: lainvalmistelun perustelut
+TOOLS:
+  search_statutes(start_year, end_year) → list statute citations
+  get_statute("number/year")            → statute text e.g. "55/2001"
+  search_decisions(court)               → list decisions (court: "okv" or "dpo")
+  get_decision(year, number, court)     → single decision text
+  get_proposal(year, number)            → government proposal (HE) text
 
-TÄRKEÄÄ: Kaikki haut ja termit on tehtävä suomeksi tai ruotsiksi. Englanninkieliset hakusanat eivät tuota tuloksia.
-
-Säädösviittaukset ovat muodossa numero/vuosi, esim. "55/2001" (Työsopimuslaki).
-Hallituksen esitysten viittausmuoto: "HE numero/vuosi", esim. "HE 215/2024".
-
-HUOMIO SAATAVILLA OLEVISTA RATKAISUTYYPEISTÄ:
-Finlexin avoin data -rajapinta ei sisällä KKO:n tai KHO:n ennakkopäätöksiä.
-Saatavilla ovat:
-- Oikeuskanslerin ratkaisut (OKV) – court="chancellor-of-justice"
-- Tietosuojavaltuutetun päätökset – court="data-protection"
-
-Kaikki tiedot ovat peräisin Suomen virallisesta oikeustietopankista (https://opendata.finlex.fi/).
-Lisenssi: Creative Commons Attribution 4.0 International (CC BY 4.0)."""
+RULES:
+  • Statute citation format: "number/year" e.g. "55/2001" (Employment Contracts Act)
+  • Search terms must be Finnish or Swedish — English returns no results
+  • KKO and KHO rulings are NOT available; only "okv" and "dpo"
+  • Long documents return [PART 1/N] — call again with chunk=N for next part
+  • For a specific paragraph only, add section="3" to get_statute"""
 
 VERSION = "1.0.0"
 WEBSITE_URL = "https://opendata.finlex.fi/"
@@ -99,11 +93,10 @@ mcp = FastMCP(
 
 # All tools run automatically without user confirmation
 mcp.tool(meta={"requires_permission": False})(search_statutes)
-mcp.tool(meta={"requires_permission": False})(get_statute_text)
-mcp.tool(meta={"requires_permission": False})(get_statute_by_citation)
-mcp.tool(meta={"requires_permission": False})(search_case_law)
-mcp.tool(meta={"requires_permission": False})(get_decision_text)
-mcp.tool(meta={"requires_permission": False})(get_government_proposal)
+mcp.tool(meta={"requires_permission": False})(get_statute)
+mcp.tool(meta={"requires_permission": False})(search_decisions)
+mcp.tool(meta={"requires_permission": False})(get_decision)
+mcp.tool(meta={"requires_permission": False})(get_proposal)
 
 ####### CUSTOM ROUTES #######
 

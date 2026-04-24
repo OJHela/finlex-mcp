@@ -1,142 +1,158 @@
 """
-test_tools.py – Live-integraatiotestit Finlex MCP -palvelimelle.
-
-Testit ottavat yhteyden oikeaan Finlex-rajapintaan.
-Aja: python3 test_tools.py
+test_tools.py – Live integration tests for Finlex MCP.
+Connects to the real Finlex API. Run: python3 test_tools.py
 """
 
 import asyncio
 import sys
 import time
 
+from tools_finlex import (
+    get_decision,
+    get_proposal,
+    get_statute,
+    search_decisions,
+    search_statutes,
+)
+
 
 async def run_tests():
     failures = []
 
-    print("=== TEST 1: Hae säädös 55/2001 (Työsopimuslaki) ===")
+    print("=== TEST 1: get_statute('55/2001') – Employment Contracts Act ===")
     try:
-        from tools_finlex import get_statute_text
-        result = await get_statute_text(year=2001, number=55)
-        assert "työsopimus" in result.lower() or "55/2001" in result.lower() or len(result) > 500, \
-            f"Odotettu teksti puuttuu. Tulos: {result[:200]}"
-        assert len(result) > 200, f"Liian lyhyt vastaus: {len(result)} merkkiä"
-        print(f"PASS — Saatiin {len(result)} merkkiä")
-        print(f"Esikatselu: {result[:300]}\n")
+        result = await get_statute("55/2001")
+        assert len(result) > 200, f"Too short: {len(result)} chars"
+        assert "55/2001" in result or "työsopimus" in result.lower()
+        print(f"PASS — {len(result)} chars")
+        print(result[:300], "\n")
     except Exception as e:
-        failures.append(f"TEST 1 EPÄONNISTUI: {e}")
+        failures.append(f"TEST 1 FAILED: {e}")
         print(f"FAIL: {e}\n")
 
     time.sleep(1)
 
-    print("=== TEST 2: Hae säädösluettelo vuodelta 2024 ===")
+    print("=== TEST 2: get_statute('55/2001', chunk=2) – pagination ===")
     try:
-        from tools_finlex import search_statutes
-        result = await search_statutes(start_year=2024, end_year=2024)
-        assert "2024" in result, f"Vuosi 2024 puuttuu vastauksesta: {result[:200]}"
+        result = await get_statute("55/2001", chunk=2)
+        assert len(result) > 100, f"Too short: {len(result)} chars"
+        # chunk 2 should NOT contain the header from chunk 1
+        print(f"PASS — {len(result)} chars")
+        print(result[:200], "\n")
+    except Exception as e:
+        failures.append(f"TEST 2 FAILED: {e}")
+        print(f"FAIL: {e}\n")
+
+    time.sleep(1)
+
+    print("=== TEST 3: get_statute('55/2001', section='1') – section filter ===")
+    try:
+        result = await get_statute("55/2001", section="1")
+        assert len(result) > 50, f"Too short: {len(result)} chars"
+        assert "[PART" not in result, "Section result should not be paginated"
+        print(f"PASS — {len(result)} chars (no pagination)")
+        print(result[:300], "\n")
+    except Exception as e:
+        failures.append(f"TEST 3 FAILED: {e}")
+        print(f"FAIL: {e}\n")
+
+    time.sleep(1)
+
+    print("=== TEST 4: get_statute('731/1999') – Constitution of Finland ===")
+    try:
+        result = await get_statute("731/1999")
+        assert len(result) > 200
+        assert "731" in result or "perustuslaki" in result.lower()
+        print(f"PASS — {len(result)} chars")
+        print(result[:200], "\n")
+    except Exception as e:
+        failures.append(f"TEST 4 FAILED: {e}")
+        print(f"FAIL: {e}\n")
+
+    time.sleep(1)
+
+    print("=== TEST 5: get_statute('39/1889') – Penal Code (long, uses -001 suffix) ===")
+    try:
+        result = await get_statute("39/1889")
+        assert len(result) <= 25_000, f"CONTEXT OVERFLOW: {len(result)} chars"
+        assert len(result) > 500
+        assert "[PART" in result, "Long statute should show pagination footer"
+        print(f"PASS — {len(result)} chars, pagination footer present")
+        print(result[-200:], "\n")
+    except Exception as e:
+        failures.append(f"TEST 5 FAILED: {e}")
+        print(f"FAIL: {e}\n")
+
+    time.sleep(1)
+
+    print("=== TEST 6: search_statutes(2024, 2024) ===")
+    try:
+        result = await search_statutes(2024, 2024)
+        assert "2024" in result
+        assert len(result) > 100
         print(f"PASS")
-        print(f"Esikatselu: {result[:300]}\n")
+        print(result[:300], "\n")
     except Exception as e:
-        failures.append(f"TEST 2 EPÄONNISTUI: {e}")
+        failures.append(f"TEST 6 FAILED: {e}")
         print(f"FAIL: {e}\n")
 
     time.sleep(1)
 
-    print("=== TEST 3: Hae viittauksen '55/2001' perusteella ===")
+    print("=== TEST 7: search_decisions('okv', 2024, 2025) ===")
     try:
-        from tools_finlex import get_statute_by_citation
-        result = await get_statute_by_citation("55/2001")
-        assert len(result) > 200, f"Liian lyhyt vastaus: {len(result)} merkkiä"
-        print(f"PASS — Saatiin {len(result)} merkkiä\n")
-    except Exception as e:
-        failures.append(f"TEST 3 EPÄONNISTUI: {e}")
-        print(f"FAIL: {e}\n")
-
-    time.sleep(1)
-
-    print("=== TEST 4: Hae oikeusratkaisuja (Oikeuskansleri) ===")
-    try:
-        from tools_finlex import search_case_law
-        result = await search_case_law(court="chancellor-of-justice", start_year=2024, end_year=2025)
-        assert len(result) > 100, f"Liian lyhyt vastaus: {len(result)} merkkiä"
-        assert "chancellor" in result.lower() or "oikeuskansleri" in result.lower() \
-               or "2024" in result or "2025" in result, \
-            f"Odotettu sisältö puuttuu: {result[:200]}"
+        result = await search_decisions("okv", 2024, 2025)
+        assert len(result) > 100
+        assert "2024" in result or "2025" in result
         print(f"PASS")
-        print(f"Esikatselu: {result[:300]}\n")
+        print(result[:300], "\n")
     except Exception as e:
-        failures.append(f"TEST 4 EPÄONNISTUI: {e}")
+        failures.append(f"TEST 7 FAILED: {e}")
         print(f"FAIL: {e}\n")
 
     time.sleep(1)
 
-    print("=== TEST 5: Kontekstiturvallisuus – suuri laki katkaistaan ===")
+    print("=== TEST 8: get_proposal(2024, 215) – HE 215/2024 ===")
     try:
-        from tools_finlex import get_statute_text
-        # Rikoslaki (39/1889) on erittäin pitkä – testaa myös -001-suffix-hakua
-        result = await get_statute_text(year=1889, number=39)
-        assert len(result) <= 30_000, \
-            f"KONTEKSTIYLITYS: {len(result)} merkkiä (raja 25 000)"
-        # Myös Työsopimuslaki (55/2001) pitäisi katketa
-        result2 = await get_statute_text(year=2001, number=55)
-        assert len(result2) <= 30_000, \
-            f"KONTEKSTIYLITYS (55/2001): {len(result2)} merkkiä (raja 25 000)"
-        print(f"PASS — Rikoslaki: {len(result)} merkkiä, Työsopimuslaki: {len(result2)} merkkiä (raja: 25 000)\n")
+        result = await get_proposal(2024, 215)
+        assert len(result) > 200
+        assert "215" in result or "hallitus" in result.lower()
+        print(f"PASS — {len(result)} chars")
+        print(result[:300], "\n")
     except Exception as e:
-        failures.append(f"TEST 5 EPÄONNISTUI: {e}")
+        failures.append(f"TEST 8 FAILED: {e}")
         print(f"FAIL: {e}\n")
 
     time.sleep(1)
 
-    print("=== TEST 6: Hae hallituksen esitys HE 215/2024 ===")
+    print("=== TEST 9: search_decisions('kko') – unavailable court error ===")
     try:
-        from tools_finlex import get_government_proposal
-        result = await get_government_proposal(year=2024, number=215)
-        assert len(result) > 200, f"Liian lyhyt vastaus: {len(result)} merkkiä"
-        assert "215" in result or "hallitus" in result.lower() or "esitys" in result.lower(), \
-            f"Odotettu sisältö puuttuu: {result[:200]}"
-        print(f"PASS — Saatiin {len(result)} merkkiä")
-        print(f"Esikatselu: {result[:300]}\n")
+        result = await search_decisions("kko")
+        assert len(result) > 20
+        assert "ERROR" in result or "not available" in result.lower()
+        print(f"PASS — error message: {result[:150]}\n")
     except Exception as e:
-        failures.append(f"TEST 6 EPÄONNISTUI: {e}")
+        failures.append(f"TEST 9 FAILED: {e}")
         print(f"FAIL: {e}\n")
 
     time.sleep(1)
 
-    print("=== TEST 7: Hae suomen perustuslaki (731/1999) ===")
+    print("=== TEST 10: get_statute bad citation ===")
     try:
-        from tools_finlex import get_statute_by_citation
-        result = await get_statute_by_citation("731/1999")
-        assert len(result) > 200, f"Liian lyhyt vastaus: {len(result)} merkkiä"
-        assert "perustuslaki" in result.lower() or "731" in result or "1999" in result, \
-            f"Odotettu sisältö puuttuu: {result[:200]}"
-        print(f"PASS — Saatiin {len(result)} merkkiä")
-        print(f"Esikatselu: {result[:300]}\n")
+        result = await get_statute("badcitation")
+        assert "ERROR" in result
+        print(f"PASS — error message: {result}\n")
     except Exception as e:
-        failures.append(f"TEST 7 EPÄONNISTUI: {e}")
+        failures.append(f"TEST 10 FAILED: {e}")
         print(f"FAIL: {e}\n")
 
-    time.sleep(1)
-
-    print("=== TEST 8: KKO-haku palauttaa selkeän virheilmoituksen ===")
-    try:
-        from tools_finlex import search_case_law
-        result = await search_case_law(court="KKO", start_year=2024, end_year=2024)
-        # Pitäisi palauttaa selkeä virheilmoitus, ei kaatua
-        assert len(result) > 20, f"Liian lyhyt vastaus: {len(result)} merkkiä"
-        print(f"PASS — KKO-haku palauttaa: {result[:200]}\n")
-    except Exception as e:
-        failures.append(f"TEST 8 EPÄONNISTUI: {e}")
-        print(f"FAIL: {e}\n")
-
-    # Yhteenveto
     print("=" * 50)
     if failures:
-        print(f"\n=== EPÄONNISTUNEET TESTIT ({len(failures)}) ===")
+        print(f"\nFAILED ({len(failures)}):")
         for f in failures:
             print(f"  {f}")
         sys.exit(1)
     else:
-        print("\nKAIKKI TESTIT LÄPÄISTY – Finlex MCP on valmis")
+        print("\nALL TESTS PASSED")
         sys.exit(0)
 
 
