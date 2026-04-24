@@ -9,6 +9,7 @@ import time
 
 from tools_finlex import (
     get_decision,
+    get_outline,
     get_proposal,
     get_statute,
     search_decisions,
@@ -143,6 +144,36 @@ async def run_tests():
         print(f"PASS — error message: {result}\n")
     except Exception as e:
         failures.append(f"TEST 10 FAILED: {e}")
+        print(f"FAIL: {e}\n")
+
+    time.sleep(1)
+
+    print("=== TEST 11: get_outline('1290/2002') – Työttömyysturvalaki structure ===")
+    try:
+        result = await get_outline("1290/2002")
+        assert len(result) > 100, f"Too short: {len(result)} chars"
+        assert "§" in result or "luku" in result.lower() or "LUKU" in result
+        # Should NOT contain body text, only headings
+        assert len(result) < 10_000, f"Outline too large — probably includes body text: {len(result)}"
+        print(f"PASS — {len(result)} chars")
+        print(result[:500], "\n")
+    except Exception as e:
+        failures.append(f"TEST 11 FAILED: {e}")
+        print(f"FAIL: {e}\n")
+
+    time.sleep(1)
+
+    print("=== TEST 12: chunk-1 of long statute includes SECTION INDEX ===")
+    try:
+        result = await get_statute("1290/2002")
+        assert "SECTION INDEX" in result, "Chunk 1 of long statute should include SECTION INDEX"
+        assert "[PART 1/" in result
+        print(f"PASS — section index present in chunk 1")
+        # Show the index portion
+        idx = result.find("SECTION INDEX")
+        print(result[idx:idx+400], "\n")
+    except Exception as e:
+        failures.append(f"TEST 12 FAILED: {e}")
         print(f"FAIL: {e}\n")
 
     print("=" * 50)

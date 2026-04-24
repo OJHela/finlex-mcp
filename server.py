@@ -25,6 +25,7 @@ load_dotenv()
 
 from tools_finlex import (
     get_decision,
+    get_outline,
     get_proposal,
     get_statute,
     search_decisions,
@@ -63,18 +64,34 @@ icon = Icon(
 INSTRUCTION_STRING = """Finlex – Finnish legal database (opendata.finlex.fi, CC BY 4.0).
 
 TOOLS:
-  search_statutes(start_year, end_year) → list statute citations
-  get_statute("number/year")            → statute text e.g. "55/2001"
+  search_statutes(start_year, end_year) → list statute citations by year
+  get_outline("number/year")            → chapter/section index of a statute (no body text)
+  get_statute("number/year")            → statute text, paginated if long
   search_decisions(court)               → list decisions (court: "okv" or "dpo")
   get_decision(year, number, court)     → single decision text
   get_proposal(year, number)            → government proposal (HE) text
 
+NAVIGATION PATTERN FOR LONG STATUTES:
+  1. get_outline("citation")            → see all section numbers and headings
+  2. get_statute("citation", section="N") → fetch only that section
+
 RULES:
-  • Statute citation format: "number/year" e.g. "55/2001" (Employment Contracts Act)
+  • Statute citation: "number/year" e.g. "55/2001"
   • Search terms must be Finnish or Swedish — English returns no results
-  • KKO and KHO rulings are NOT available; only "okv" and "dpo"
-  • Long documents return [PART 1/N] — call again with chunk=N for next part
-  • For a specific paragraph only, add section="3" to get_statute"""
+  • KKO and KHO rulings are NOT available; only "okv" (Chancellor) and "dpo" (Data Protection)
+  • Long documents: response shows [PART 1/N | NEXT: call...] — use the exact call shown
+
+COMMON STATUTE CITATIONS (Finnish name → citation):
+  Perustuslaki                  731/1999
+  Rikoslaki                     39/1889
+  Työsopimuslaki                55/2001
+  Työttömyysturvalaki           1290/2002
+  Lastensuojelulaki             417/2007
+  Tietosuojalaki                1050/2018
+  Yhdenvertaisuuslaki           1325/2014
+  Laki potilaan asemasta        785/1992
+  Hallintolaki                  434/2003
+  Oikeudenkäymiskaari           4/1734"""
 
 VERSION = "1.0.0"
 WEBSITE_URL = "https://opendata.finlex.fi/"
@@ -93,6 +110,7 @@ mcp = FastMCP(
 
 # All tools run automatically without user confirmation
 mcp.tool(meta={"requires_permission": False})(search_statutes)
+mcp.tool(meta={"requires_permission": False})(get_outline)
 mcp.tool(meta={"requires_permission": False})(get_statute)
 mcp.tool(meta={"requires_permission": False})(search_decisions)
 mcp.tool(meta={"requires_permission": False})(get_decision)

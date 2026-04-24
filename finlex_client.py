@@ -195,6 +195,42 @@ def _extract_text_from_element(elem: ET.Element, indent: int = 0) -> List[str]:
     return lines
 
 
+def _build_outline(doc_elem: ET.Element) -> str:
+    """
+    Return a compact section/chapter index for the document.
+    Format: chapter headings + section numbers with headings, one line each.
+    Used to help models navigate directly to the right section.
+    """
+    lines = []
+    current_chapter = None
+
+    for elem in doc_elem.iter():
+        tag = elem.tag.replace(f"{{{AKN_NS}}}", "")
+
+        if tag in ("chapter", "hcontainer"):
+            num_el = elem.find(_tag("num"))
+            head_el = elem.find(_tag("heading"))
+            parts = []
+            if num_el is not None and num_el.text:
+                parts.append(num_el.text.strip())
+            if head_el is not None and head_el.text:
+                parts.append(head_el.text.strip())
+            if parts:
+                current_chapter = " – ".join(parts)
+                lines.append(f"[{current_chapter}]")
+
+        elif tag == "section":
+            num_el = elem.find(_tag("num"))
+            head_el = elem.find(_tag("heading"))
+            if num_el is not None and num_el.text:
+                num = num_el.text.strip()
+                heading = head_el.text.strip() if head_el is not None and head_el.text else ""
+                entry = f"  {num}" + (f"  {heading}" if heading else "")
+                lines.append(entry)
+
+    return "\n".join(lines)
+
+
 def _normalize_section_num(s: str) -> str:
     """Strip § and whitespace for comparison, e.g. '3 §' → '3'."""
     return s.strip().rstrip("§").strip()
@@ -397,6 +433,12 @@ def parse_akn_xml(
     start = (chunk - 1) * CHUNK_SIZE
     chunk_text = full_text[start: start + CHUNK_SIZE]
 
+    # Attach compact section outline to chunk 1 of multi-chunk documents so
+    # the model can navigate directly to a section instead of paging through.
+    outline = ""
+    if chunk == 1 and total_chunks > 1:
+        outline = _build_outline(doc_elem)
+
     return {
         "title": title,
         "number": doc_number or meta.get("number", ""),
@@ -409,7 +451,34 @@ def parse_akn_xml(
         "total_chunks": total_chunks,
         "total_length": total_length,
         "truncated": total_chunks > 1,
+        "outline": outline,
     }
+
+
+def build_outline_from_xml(xml_content: str) -> dict:
+    """Parse XML and return title + compact section outline. No body text extracted."""
+    try:
+        root = ET.fromstring(xml_content)
+    except ET.ParseError as e:
+        return {"error": str(e), "outline": ""}
+
+    act_el = root.find(_tag("act"))
+    judgment_el = root.find(_tag("judgment"))
+    doc_el = root.find(_tag("doc"))
+    doc_elem = act_el or judgment_el or doc_el or root
+
+    title = ""
+    doc_number = ""
+    preface = doc_elem.find(_tag("preface"))
+    if preface is not None:
+        docnum_el = preface.find(f".//{_tag('docNumber')}")
+        if docnum_el is not None:
+            doc_number = (docnum_el.text or "").strip()
+        doctitle_el = preface.find(f".//{_tag('docTitle')}")
+        if doctitle_el is not None:
+            title = (doctitle_el.text or "").strip()
+
+    return {"title": title, "number": doc_number, "outline": _build_outline(doc_elem)}
 
 
 # ---------------------------------------------------------------------------
@@ -546,10 +615,15 @@ def format_result(parsed: dict, next_call: str = "") -> str:
     text = parsed.get("text", "")
     chunk = parsed.get("chunk", 1)
     total_chunks = parsed.get("total_chunks", 1)
+    outline = parsed.get("outline", "")
     if total_chunks > 1:
         if chunk < total_chunks:
             continuation = f" | NEXT: {next_call}" if next_call else ""
-            text += f"\n\n[PART {chunk}/{total_chunks}{continuation}]"
+            footer = f"\n\n[PART {chunk}/{total_chunks}{continuation}]"
         else:
-            text += f"\n\n[PART {chunk}/{total_chunks} — END]"
+            footer = f"\n\n[PART {chunk}/{total_chunks} — END]"
+        # Append outline on chunk 1 so model can jump to any section directly
+        if chunk == 1 and outline:
+            footer += f"\n\nSECTION INDEX (use section= param to fetch one section):\n{outline}"
+        text += footer
     return text

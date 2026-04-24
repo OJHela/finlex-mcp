@@ -10,6 +10,7 @@ import re
 from typing import Optional
 
 from finlex_client import (
+    build_outline_from_xml,
     fetch_doc_xml,
     fetch_judgment_xml,
     fetch_statute_xml,
@@ -90,7 +91,55 @@ async def search_statutes(
 
 
 # ---------------------------------------------------------------------------
-# Tool 2: get_statute
+# Tool 2: get_outline
+# ---------------------------------------------------------------------------
+
+async def get_outline(citation: str, lang: str = "fin") -> str:
+    """
+    Fetch the chapter/section structure of a statute WITHOUT the full body text.
+    Use this first when you need to navigate a long statute to a specific section.
+    Returns section numbers and headings; then call get_statute(citation, section="N").
+
+    Args:
+        citation: "number/year" e.g. "1290/2002"
+        lang: "fin" (default) or "swe"
+
+    Example:
+        get_outline("1290/2002")  → section list for Työttömyysturvalaki
+        → then: get_statute("1290/2002", section="6")
+    """
+    citation = citation.strip()
+    m = re.match(r"^(\d+)[/\-](\d{4})$", citation)
+    if m:
+        number, year = int(m.group(1)), int(m.group(2))
+    else:
+        m2 = re.match(r"^(\d{4})[/\-](\d+)$", citation)
+        if m2:
+            year, number = int(m2.group(1)), int(m2.group(2))
+        else:
+            return f'ERROR: Invalid citation "{citation}". Use "number/year" e.g. "1290/2002".'
+
+    for doc_type in ("statute", "statute-consolidated"):
+        try:
+            xml = fetch_statute_xml(year, number, lang, doc_type)
+            result = build_outline_from_xml(xml)
+            if result.get("outline"):
+                lines = []
+                if result.get("title"):
+                    lines.append(f"{citation} – {result['title']}")
+                lines.append("")
+                lines.append(result["outline"])
+                lines.append(f'\nFetch a section: get_statute("{citation}", section="N")')
+                lines.append(f'Fetch full text: get_statute("{citation}")')
+                return "\n".join(lines)
+        except Exception:
+            continue
+
+    return f'ERROR: Statute "{citation}" not found.'
+
+
+# ---------------------------------------------------------------------------
+# Tool 3: get_statute
 # ---------------------------------------------------------------------------
 
 async def get_statute(
