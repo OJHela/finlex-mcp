@@ -1,5 +1,5 @@
 """
-tools_finlex.py – Finlex MCP tools (5 tools).
+tools_finlex.py – Finlex MCP tools (7 tools).
 
 All tools return plain strings. Use Finnish/Swedish search terms only.
 Citation format for statutes: "number/year" e.g. "55/2001".
@@ -7,7 +7,7 @@ Court codes: "okv" = Chancellor of Justice, "dpo" = Data Protection Ombudsman.
 """
 
 import re
-from typing import Optional
+from typing import List, Optional
 
 from finlex_client import (
     build_outline_from_xml,
@@ -20,6 +20,208 @@ from finlex_client import (
     parse_akn_xml,
 )
 
+
+# ---------------------------------------------------------------------------
+# Statute name → citation index
+# Keys: lowercase Finnish name or common abbreviation
+# Values: "number/year" citation string
+# ---------------------------------------------------------------------------
+
+STATUTE_INDEX = {
+    # Constitutional & fundamental
+    "perustuslaki": "731/1999",
+    "suomen perustuslaki": "731/1999",
+    # Criminal
+    "rikoslaki": "39/1889",
+    "rl": "39/1889",
+    # Civil procedure
+    "oikeudenkäymiskaari": "4/1734",
+    "ok": "4/1734",
+    "oyk": "4/1734",
+    # Commercial
+    "kauppakaari": "3/1734",
+    "osakeyhtiölaki": "624/2006",
+    "oyl": "624/2006",
+    "laki avoimesta yhtiöstä ja kommandiittiyhtiöstä": "389/1988",
+    "prokuralaki": "130/1979",
+    "kilpailulaki": "948/2011",
+    "kuluttajansuojalaki": "38/1978",
+    "ksl": "38/1978",
+    "laki saatavien perinnästä": "513/1999",
+    # Employment & social security
+    "työsopimuslaki": "55/2001",
+    "tsl": "55/2001",
+    "työturvallisuuslaki": "738/2002",
+    "tturl": "738/2002",
+    "työaikalaki": "872/2019",
+    "tal": "872/2019",
+    "vuosilomalaki": "162/2005",
+    "vll": "162/2005",
+    "laki yhteistoiminnasta yrityksissä": "334/2007",
+    "ytl": "334/2007",
+    "laki yksityisyyden suojasta työelämässä": "759/2004",
+    "työttömyysturvalaki": "1290/2002",
+    "ttl": "1290/2002",
+    # Pension
+    "yrittäjien eläkelaki": "1272/2006",
+    "yel": "1272/2006",
+    "maatalousyrittäjien eläkelaki": "1280/2006",
+    "myel": "1280/2006",
+    "työntekijän eläkelaki": "395/2006",
+    "tel": "395/2006",
+    "kansaneläkelaki": "568/2007",
+    "kel": "568/2007",
+    # Administrative
+    "hallintolaki": "434/2003",
+    "hl": "434/2003",
+    "hallintoprosessilaki": "808/2019",
+    "laki oikeudenkäynnistä hallintoasioissa": "808/2019",
+    "laki viranomaisten toiminnan julkisuudesta": "621/1999",
+    "julkisuuslaki": "621/1999",
+    "jl": "621/1999",
+    "kuntalaki": "410/2015",
+    "kl": "410/2015",
+    # Data protection & privacy
+    "tietosuojalaki": "1050/2018",
+    "tsl2": "1050/2018",
+    "henkilötietolaki": "523/1999",
+    # Family & persons
+    "avioliittolaki": "234/1929",
+    "al": "234/1929",
+    "isyyslaki": "11/2015",
+    "laki lapsen huollosta ja tapaamisoikeudesta": "361/1983",
+    "perintökaari": "40/1965",
+    "pk": "40/1965",
+    "holhoustoimilaki": "442/1999",
+    "edunvalvonta": "442/1999",
+    # Social welfare & health
+    "lastensuojelulaki": "417/2007",
+    "lsl": "417/2007",
+    "sosiaalihuoltolaki": "1301/2014",
+    "shl": "1301/2014",
+    "laki sosiaalihuollon asiakkaan asemasta ja oikeuksista": "812/2000",
+    "asiakaslaki": "812/2000",
+    "terveydenhuoltolaki": "1326/2010",
+    "tervl": "1326/2010",
+    "laki potilaan asemasta ja oikeuksista": "785/1992",
+    "potilaslaki": "785/1992",
+    "mielenterveyslaki": "1116/1990",
+    "päihdehuoltolaki": "41/1986",
+    "varhaiskasvatuslaki": "540/2018",
+    "vkl": "540/2018",
+    # Education
+    "perusopetuslaki": "628/1998",
+    "pol": "628/1998",
+    "lukiolaki": "714/2018",
+    "ammattikorkeakoululaki": "932/2014",
+    "amkl": "932/2014",
+    "yliopistolaki": "558/2009",
+    # Immigration & citizenship
+    "ulkomaalaislaki": "301/2004",
+    "ul": "301/2004",
+    "kansalaisuuslaki": "359/2003",
+    # Property & housing
+    "asunto-osakeyhtiölaki": "1599/2009",
+    "aoyl": "1599/2009",
+    "asuinhuoneiston vuokraamisesta annettu laki": "481/1995",
+    "huoneenvuokralaki": "481/1995",
+    "asuntokauppalaki": "843/1994",
+    "maankäyttö- ja rakennuslaki": "132/1999",
+    "mkrl": "132/1999",
+    "kiinteistönmuodostamislaki": "554/1995",
+    # Insolvency
+    "konkurssilaki": "120/2004",
+    "ulosottokaari": "705/2007",
+    "uk": "705/2007",
+    # Tax
+    "tuloverolaki": "1535/1992",
+    "tvl": "1535/1992",
+    "arvonlisäverolaki": "1501/1993",
+    "avl": "1501/1993",
+    "laki elinkeinotulon verottamisesta": "360/1968",
+    "evl": "360/1968",
+    # Procurement
+    "laki julkisista hankinnoista ja käyttöoikeussopimuksista": "1397/2016",
+    "hankintalaki": "1397/2016",
+    # Non-discrimination & equality
+    "yhdenvertaisuuslaki": "1325/2014",
+    "yvl": "1325/2014",
+    "tasa-arvolaki": "609/1986",
+    # Criminal procedure
+    "laki oikeudenkäynnistä rikosasioissa": "689/1997",
+    "roi": "689/1997",
+    # Execution
+    "laki oikeudenkäymiskaaren muuttamisesta": "4/1734",
+}
+
+
+def _find_in_index(query: str) -> List[tuple]:
+    """
+    Return list of (name, citation) tuples matching the query.
+    Tries exact match first, then substring match.
+    """
+    q = query.strip().lower()
+    # Exact match
+    if q in STATUTE_INDEX:
+        return [(q, STATUTE_INDEX[q])]
+    # Substring match across all keys and values
+    results = []
+    for name, citation in STATUTE_INDEX.items():
+        if q in name or q in citation:
+            results.append((name, citation))
+    # Deduplicate by citation
+    seen = set()
+    unique = []
+    for name, citation in results:
+        if citation not in seen:
+            seen.add(citation)
+            unique.append((name, citation))
+    return unique
+
+
+# ---------------------------------------------------------------------------
+# Tool 1: find_statute
+# ---------------------------------------------------------------------------
+
+async def find_statute(query: str) -> str:
+    """
+    Look up a Finnish statute citation by name or abbreviation.
+    Use this FIRST when you know the name of a law but not its citation number.
+    Do NOT use search_statutes for name-based lookup — it only lists by year.
+
+    Args:
+        query: Finnish statute name or abbreviation e.g. "Työttömyysturvalaki", "YEL", "rikoslaki"
+
+    Returns: Matching citations. Then call get_outline(citation) to see sections.
+
+    Examples:
+        find_statute("työttömyysturvalaki") → citation 1290/2002
+        find_statute("YEL")                → citation 1272/2006
+        find_statute("rikoslaki")          → citation 39/1889
+        find_statute("lastensuojelu")      → citation 417/2007
+    """
+    matches = _find_in_index(query)
+    if not matches:
+        return (
+            f'No statute found for "{query}".\n'
+            "Try the Finnish legal name, e.g. \"Työttömyysturvalaki\", \"Rikoslaki\", \"YEL\".\n"
+            "If the law is not in the index, use search_statutes(year, year) to browse by year."
+        )
+    lines = [f'Statute lookup: "{query}"', ""]
+    for name, citation in matches[:8]:
+        lines.append(f"  {citation}  –  {name}")
+    lines.append("")
+    if len(matches) == 1:
+        lines.append(f'See sections: get_outline("{matches[0][1]}")')
+        lines.append(f'Fetch text:   get_statute("{matches[0][1]}")')
+    else:
+        lines.append("Use get_outline(citation) to see sections of the correct statute.")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Helper
+# ---------------------------------------------------------------------------
 
 def _uri_meta(uri: str) -> dict:
     parts = uri.rstrip("/").split("/")

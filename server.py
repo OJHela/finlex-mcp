@@ -24,6 +24,7 @@ from starlette.responses import JSONResponse, PlainTextResponse
 load_dotenv()
 
 from tools_finlex import (
+    find_statute,
     get_decision,
     get_outline,
     get_proposal,
@@ -64,34 +65,24 @@ icon = Icon(
 INSTRUCTION_STRING = """Finlex – Finnish legal database (opendata.finlex.fi, CC BY 4.0).
 
 TOOLS:
-  search_statutes(start_year, end_year) → list statute citations by year
-  get_outline("number/year")            → chapter/section index of a statute (no body text)
+  find_statute("name or abbreviation")  → get citation from statute name e.g. "Työttömyysturvalaki"
+  get_outline("number/year")            → chapter/section index (use BEFORE reading long statutes)
   get_statute("number/year")            → statute text, paginated if long
   search_decisions(court)               → list decisions (court: "okv" or "dpo")
   get_decision(year, number, court)     → single decision text
   get_proposal(year, number)            → government proposal (HE) text
+  search_statutes(start_year, end_year) → list statute citations by year (NOT by name)
 
-NAVIGATION PATTERN FOR LONG STATUTES:
-  1. get_outline("citation")            → see all section numbers and headings
-  2. get_statute("citation", section="N") → fetch only that section
+RECOMMENDED WORKFLOW:
+  1. find_statute("name")               → get citation e.g. "1290/2002"
+  2. get_outline("1290/2002")           → see sections, find the right one
+  3. get_statute("1290/2002", section="6") → fetch only that section
 
 RULES:
-  • Statute citation: "number/year" e.g. "55/2001"
-  • Search terms must be Finnish or Swedish — English returns no results
-  • KKO and KHO rulings are NOT available; only "okv" (Chancellor) and "dpo" (Data Protection)
-  • Long documents: response shows [PART 1/N | NEXT: call...] — use the exact call shown
-
-COMMON STATUTE CITATIONS (Finnish name → citation):
-  Perustuslaki                  731/1999
-  Rikoslaki                     39/1889
-  Työsopimuslaki                55/2001
-  Työttömyysturvalaki           1290/2002
-  Lastensuojelulaki             417/2007
-  Tietosuojalaki                1050/2018
-  Yhdenvertaisuuslaki           1325/2014
-  Laki potilaan asemasta        785/1992
-  Hallintolaki                  434/2003
-  Oikeudenkäymiskaari           4/1734"""
+  • Do NOT guess statute citation numbers — always use find_statute first
+  • search_statutes lists by year only, it cannot search by name
+  • KKO and KHO rulings are NOT available; only "okv" and "dpo"
+  • Long documents: use the exact next-call shown in [PART 1/N | NEXT: ...]"""
 
 VERSION = "1.0.0"
 WEBSITE_URL = "https://opendata.finlex.fi/"
@@ -109,12 +100,13 @@ mcp = FastMCP(
 ####### TOOLS #######
 
 # All tools run automatically without user confirmation
-mcp.tool(meta={"requires_permission": False})(search_statutes)
+mcp.tool(meta={"requires_permission": False})(find_statute)
 mcp.tool(meta={"requires_permission": False})(get_outline)
 mcp.tool(meta={"requires_permission": False})(get_statute)
 mcp.tool(meta={"requires_permission": False})(search_decisions)
 mcp.tool(meta={"requires_permission": False})(get_decision)
 mcp.tool(meta={"requires_permission": False})(get_proposal)
+mcp.tool(meta={"requires_permission": False})(search_statutes)
 
 ####### CUSTOM ROUTES #######
 

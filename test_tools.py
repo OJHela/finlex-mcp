@@ -8,6 +8,7 @@ import sys
 import time
 
 from tools_finlex import (
+    find_statute,
     get_decision,
     get_outline,
     get_proposal,
@@ -174,6 +175,64 @@ async def run_tests():
         print(result[idx:idx+400], "\n")
     except Exception as e:
         failures.append(f"TEST 12 FAILED: {e}")
+        print(f"FAIL: {e}\n")
+
+    time.sleep(1)
+
+    print("=== TEST 13: find_statute('työttömyysturvalaki') – exact match ===")
+    try:
+        result = await find_statute("työttömyysturvalaki")
+        assert "1290/2002" in result, f"Expected 1290/2002, got: {result}"
+        print(f"PASS")
+        print(result, "\n")
+    except Exception as e:
+        failures.append(f"TEST 13 FAILED: {e}")
+        print(f"FAIL: {e}\n")
+
+    print("=== TEST 14: find_statute('YEL') – abbreviation match ===")
+    try:
+        result = await find_statute("YEL")
+        assert "1272/2006" in result, f"Expected 1272/2006, got: {result}"
+        print(f"PASS — {result.strip()}\n")
+    except Exception as e:
+        failures.append(f"TEST 14 FAILED: {e}")
+        print(f"FAIL: {e}\n")
+
+    print("=== TEST 15: find_statute('lastensuojelu') – partial match ===")
+    try:
+        result = await find_statute("lastensuojelu")
+        assert "417/2007" in result, f"Expected 417/2007, got: {result}"
+        print(f"PASS — {result.strip()}\n")
+    except Exception as e:
+        failures.append(f"TEST 15 FAILED: {e}")
+        print(f"FAIL: {e}\n")
+
+    print("=== TEST 16: find_statute('nonsense') – no match ===")
+    try:
+        result = await find_statute("nonsense")
+        assert "No statute found" in result
+        print(f"PASS — {result.strip()}\n")
+    except Exception as e:
+        failures.append(f"TEST 16 FAILED: {e}")
+        print(f"FAIL: {e}\n")
+
+    print("=== TEST 17: Ideal 3-call path for the open-source model question ===")
+    try:
+        # Step 1: find citation
+        r1 = await find_statute("työttömyysturvalaki")
+        assert "1290/2002" in r1
+        # Step 2: get outline, find § 6
+        r2 = await get_outline("1290/2002")
+        assert "6 §" in r2 or "6§" in r2 or "Yrittäjä" in r2
+        # Step 3: fetch just § 6
+        r3 = await get_statute("1290/2002", section="6")
+        assert len(r3) > 100
+        assert "[PART" not in r3, "Single section should not be paginated"
+        print(f"PASS — answered in 3 tool calls (find_statute → get_outline → get_statute section=6)")
+        print(f"Section content ({len(r3)} chars):")
+        print(r3[:400], "\n")
+    except Exception as e:
+        failures.append(f"TEST 17 FAILED: {e}")
         print(f"FAIL: {e}\n")
 
     print("=" * 50)
