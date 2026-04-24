@@ -19,7 +19,7 @@ import re
 from typing import Optional
 
 from finlex_client import (
-    CHAR_LIMIT,
+    CHUNK_SIZE,
     fetch_doc_xml,
     fetch_judgment_xml,
     fetch_statute_xml,
@@ -43,9 +43,6 @@ def _uri_to_metadata(uri: str) -> dict:
     parts = uri.rstrip("/").split("/")
     result = {}
     try:
-        # Etsi numeroa edeltävä kohta
-        # URI muoto: .../act/{type}/{year}/{number}/{lang}@
-        # tai: .../judgment/{type}/{year}/{number}/{lang}@
         lang_ver = parts[-1]
         lang = lang_ver.replace("%40", "").replace("@", "").strip()
         result["lang"] = lang if lang else "fin"
@@ -135,51 +132,59 @@ async def get_statute_text(
     number: int,
     lang: str = "fin",
     section: Optional[str] = None,
+    chunk: int = 1,
 ) -> str:
     """
-    Hae yksittäisen säädöksen koko teksti Finlexistä.
+    Hae yksittäisen säädöksen teksti Finlexistä.
 
     Hakee säädöksen vuoden ja numeron perusteella (Suomen säädöskokoelman viittausmuoto).
-    Palauttaa Akoma Ntoso -muotoisen XML-dokumentin tekstimuodossa.
 
-    Ensin yritetään hakea alkuperäistä säädöstä (statute), sitten konsolidoitua
-    versiota (statute-consolidated), jos alkuperäistä ei löydy.
+    PITKÄT DOKUMENTIT – SIVUTUS:
+    Pitkät säädökset palautetaan osissa (chunk). Vastauksessa näkyy esim.
+    "[OSA 1/4]", jolloin hae loput osilla chunk=2, chunk=3, chunk=4.
+    Jokainen osa on noin 20 000 merkkiä.
+
+    YKSITTÄINEN PYKÄLÄ:
+    Hae tietty pykälä section-parametrilla, esim. section="3" tai section="3 §".
+    Tällöin palautetaan vain kyseinen pykälä ilman sivutusta.
 
     Parametrit:
         year: Säädöksen antamisvuosi (esim. 2001)
         number: Säädöksen numero (esim. 55)
         lang: Kielikoodi – "fin" = suomi (oletus), "swe" = ruotsi
-        section: Valinnainen pykäläfiltteri (esim. "3" → luku/pykälä 3).
-                 Tällä hetkellä ei suodateta – palautetaan koko teksti.
+        section: Valinnainen pykäläfiltteri (esim. "3" tai "3 §").
+                 Jos annettu, palautetaan vain kyseinen pykälä/luku.
+        chunk: Osan numero kokonaisdokumentin sivutuksessa (oletus: 1).
+               Käytetään vain, kun section ei ole annettu.
 
-    Palauttaa: Säädöksen teksti merkkijonona (max 25 000 merkkiä).
-               Jos dokumentti on pitkä, se katkaistaan ja lisätään huomio.
+    Palauttaa: Säädöksen teksti tai pyydetty pykälä merkkijonona.
 
     Esimerkki:
-        get_statute_text(year=2001, number=55)   → Työsopimuslaki
-        get_statute_text(year=1889, number=39)   → Rikoslaki
-        get_statute_text(year=1999, number=731)  → Suomen perustuslaki
+        get_statute_text(year=2001, number=55)              → Työsopimuslaki (osa 1)
+        get_statute_text(year=2001, number=55, chunk=2)     → Työsopimuslaki (osa 2)
+        get_statute_text(year=2001, number=55, section="3") → Vain 3 § Työsopimuslaista
+        get_statute_text(year=1889, number=39)              → Rikoslaki
+        get_statute_text(year=1999, number=731)             → Suomen perustuslaki
     """
-    try:
-        xml_content = fetch_statute_xml(year, number, lang, "statute")
-        parsed = parse_akn_xml(xml_content)
-        result = format_result(parsed)
-        if len(result) < 50:
-            # Yritetään konsolidoitua versiota
-            xml_content2 = fetch_statute_xml(year, number, lang, "statute-consolidated")
-            parsed2 = parse_akn_xml(xml_content2)
-            result2 = format_result(parsed2)
-            if len(result2) > len(result):
-                return result2
-        return result
-    except Exception as e:
-        # Yritetään konsolidoitua versiota
+    def _fetch_and_parse(doc_type: str) -> Optional[dict]:
         try:
-            xml_content = fetch_statute_xml(year, number, lang, "statute-consolidated")
-            parsed = parse_akn_xml(xml_content)
-            return format_result(parsed)
-        except Exception as e2:
-            return f"Säädöstä {number}/{year} ei löydy. Virhe: {e} | {e2}"
+            xml_content = fetch_statute_xml(year, number, lang, doc_type)
+            return parse_akn_xml(xml_content, section_filter=section, chunk=chunk)
+        except Exception:
+            return None
+
+    parsed = _fetch_and_parse("statute")
+
+    # Fall back to consolidated version if original is empty or not found
+    if parsed is None or len(parsed.get("text", "")) < 50:
+        parsed2 = _fetch_and_parse("statute-consolidated")
+        if parsed2 and len(parsed2.get("text", "")) > len(parsed.get("text", "") if parsed else ""):
+            parsed = parsed2
+
+    if parsed is None:
+        return f"Säädöstä {number}/{year} ei löydy."
+
+    return format_result(parsed)
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +194,8 @@ async def get_statute_text(
 async def get_statute_by_citation(
     citation: str,
     lang: str = "fin",
+    section: Optional[str] = None,
+    chunk: int = 1,
 ) -> str:
     """
     Hae säädös suomalaisen säädösviittauksen perusteella (muoto numero/vuosi).
@@ -199,23 +206,24 @@ async def get_statute_by_citation(
     Parametrit:
         citation: Säädösviittaus muodossa "numero/vuosi" (esim. "55/2001", "731/1999")
         lang: Kielikoodi – "fin" = suomi (oletus), "swe" = ruotsi
+        section: Valinnainen pykäläfiltteri (esim. "3" tai "3 §").
+        chunk: Osan numero sivutuksessa (oletus: 1).
 
     Palauttaa: Säädöksen teksti tai virheilmoitus.
 
     Esimerkkejä:
-        get_statute_by_citation("55/2001")   → Työsopimuslaki
-        get_statute_by_citation("731/1999")  → Suomen perustuslaki
-        get_statute_by_citation("39/1889")   → Rikoslaki
-        get_statute_by_citation("417/2007")  → Lastensuojelulaki
+        get_statute_by_citation("55/2001")                      → Työsopimuslaki (osa 1)
+        get_statute_by_citation("55/2001", section="3")         → Vain 3 § Työsopimuslaista
+        get_statute_by_citation("731/1999")                     → Suomen perustuslaki
+        get_statute_by_citation("39/1889")                      → Rikoslaki
+        get_statute_by_citation("417/2007")                     → Lastensuojelulaki
     """
-    # Tunnistetaan muoto numero/vuosi tai vuosi/numero
     citation = citation.strip()
     match = re.match(r"^(\d+)[/\-](\d{4})$", citation)
     if match:
         number = int(match.group(1))
         year = int(match.group(2))
     else:
-        # Kokeillaan myös muotoa vuosi/numero (harvinaisempi)
         match2 = re.match(r"^(\d{4})[/\-](\d+)$", citation)
         if match2:
             year = int(match2.group(1))
@@ -226,7 +234,7 @@ async def get_statute_by_citation(
                 "Käytä muotoa 'numero/vuosi', esim. '55/2001'."
             )
 
-    return await get_statute_text(year=year, number=number, lang=lang)
+    return await get_statute_text(year=year, number=number, lang=lang, section=section, chunk=chunk)
 
 
 # ---------------------------------------------------------------------------
@@ -272,7 +280,6 @@ async def search_case_law(
         "tietosuoja": "data-protection-ombudsman-decision",
         "tso": "data-protection-ombudsman-decision",
         "ombudsman": "data-protection-ombudsman-decision",
-        # Nämä eivät ole saatavilla, mutta annetaan selkeä virheilmoitus
         "kko": None,
         "kho": None,
         "ho": None,
@@ -289,7 +296,6 @@ async def search_case_law(
                 "  - 'data-protection' = Tietosuojavaltuutetun päätökset\n\n"
                 "KKO:n ja KHO:n ennakkopäätökset löytyvät osoitteesta: https://www.finlex.fi/fi/oikeus/"
             )
-        # Yritetään suoraan dokumenttityyppinä
         judgment_type = court
 
     try:
@@ -337,11 +343,16 @@ async def get_decision_text(
     year: int,
     number: int,
     court: str = "chancellor-of-justice",
+    chunk: int = 1,
 ) -> str:
     """
     Hae yksittäisen oikeuspäätöksen tai viranomaispäätöksen teksti Finlexistä.
 
     Hakee päätöksen vuoden ja numeron perusteella.
+
+    PITKÄT DOKUMENTIT – SIVUTUS:
+    Jos päätös on pitkä, vastauksessa näkyy esim. "[OSA 1/3]".
+    Hae loput osilla chunk=2, chunk=3 jne.
 
     Parametrit:
         year: Päätöksen vuosi (esim. 2025)
@@ -349,11 +360,13 @@ async def get_decision_text(
         court: Tuomioistuin/viranomainen:
             - "chancellor-of-justice" = Oikeuskansleri (oletus)
             - "data-protection"       = Tietosuojavaltuutettu
+        chunk: Osan numero sivutuksessa (oletus: 1).
 
-    Palauttaa: Päätöksen teksti merkkijonona (max 25 000 merkkiä).
+    Palauttaa: Päätöksen teksti merkkijonona.
 
     Esimerkki:
         get_decision_text(year=2025, number=11017, court="chancellor-of-justice")
+        get_decision_text(year=2025, number=11017, court="chancellor-of-justice", chunk=2)
         get_decision_text(year=2025, number=2464, court="data-protection")
 
     HUOM: KKO:n ja KHO:n päätökset eivät ole saatavilla tässä rajapinnassa.
@@ -373,7 +386,7 @@ async def get_decision_text(
 
     try:
         xml_content = fetch_judgment_xml(judgment_type, year, number, "fin")
-        parsed = parse_akn_xml(xml_content)
+        parsed = parse_akn_xml(xml_content, chunk=chunk)
         return format_result(parsed)
     except Exception as e:
         return f"Päätöstä {year}/{number} (tyyppi: {judgment_type}) ei löydy. Virhe: {e}"
@@ -387,6 +400,7 @@ async def get_government_proposal(
     year: int,
     number: int,
     lang: str = "fin",
+    chunk: int = 1,
 ) -> str:
     """
     Hae hallituksen esityksen (HE) teksti Finlexistä.
@@ -394,23 +408,27 @@ async def get_government_proposal(
     Hallituksen esitykset ovat lainvalmistelun perusteluasiakirjoja, joissa
     selitetään lain tarkoitus, vaikutukset ja yksityiskohtaiset perustelut.
 
+    PITKÄT DOKUMENTIT – SIVUTUS:
+    Hallituksen esitykset ovat usein hyvin pitkiä. Vastauksessa näkyy esim.
+    "[OSA 1/6]". Hae loput osilla chunk=2, chunk=3 jne.
+
     Parametrit:
         year: Hallituksen esityksen vuosi (esim. 2024)
         number: Hallituksen esityksen numero ilman "HE"-etuliitettä (esim. 215)
         lang: Kielikoodi – "fin" = suomi (oletus), "swe" = ruotsi
+        chunk: Osan numero sivutuksessa (oletus: 1).
 
-    Palauttaa: Hallituksen esityksen teksti merkkijonona (max 25 000 merkkiä).
-               Pitkät asiakirjat katkaistaan ja huomio lisätään.
+    Palauttaa: Hallituksen esityksen teksti merkkijonona.
 
     Esimerkkejä:
-        get_government_proposal(year=2024, number=215)  → HE 215/2024
-        get_government_proposal(year=2024, number=1)    → HE 1/2024
+        get_government_proposal(year=2024, number=215)          → HE 215/2024 (osa 1)
+        get_government_proposal(year=2024, number=215, chunk=2) → HE 215/2024 (osa 2)
 
     Viittausmuoto: "HE numero/vuosi" esim. "HE 215/2024"
     """
     try:
         xml_content = fetch_doc_xml("government-proposal", year, number, lang)
-        parsed = parse_akn_xml(xml_content)
+        parsed = parse_akn_xml(xml_content, chunk=chunk)
         return format_result(parsed)
     except Exception as e:
         return f"Hallituksen esitystä HE {number}/{year} ei löydy. Virhe: {e}"

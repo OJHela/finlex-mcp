@@ -15,7 +15,7 @@ Valid document types (from API spec):
 
 import time
 import xml.etree.ElementTree as ET
-from typing import Optional
+from typing import List, Optional, Union
 
 import httpx
 
@@ -27,7 +27,8 @@ HEADERS = {
 }
 
 TIMEOUT = 30.0
-CHAR_LIMIT = 25_000
+CHUNK_SIZE = 20_000  # Characters per chunk — keeps responses well inside context limits
+CHAR_LIMIT = CHUNK_SIZE  # Backwards-compatible alias
 
 AKN_NS = "http://docs.oasis-open.org/legaldocml/ns/akn/3.0"
 FINLEX_NS = "http://data.finlex.fi/schema/finlex"
@@ -53,7 +54,7 @@ def _get(url: str, params: dict = None, accept: str = "application/xml") -> http
         raise RuntimeError(f"Rate limited after 3 attempts: {url}")
 
 
-def _get_json(url: str, params: dict = None) -> list | dict:
+def _get_json(url: str, params: dict = None) -> Union[List, dict]:
     """GET JSON list endpoint."""
     if params is None:
         params = {}
@@ -83,7 +84,7 @@ def _get_text_recursive(elem: ET.Element) -> str:
     return " ".join(p for p in parts if p)
 
 
-def _extract_text_from_element(elem: ET.Element, indent: int = 0) -> list[str]:
+def _extract_text_from_element(elem: ET.Element, indent: int = 0) -> List[str]:
     """
     Walk an AKN element tree and return list of human-readable text lines.
     Handles: chapter, section, subsection, paragraph, content, p, heading,
@@ -194,7 +195,57 @@ def _extract_text_from_element(elem: ET.Element, indent: int = 0) -> list[str]:
     return lines
 
 
-def parse_akn_xml(xml_content: str) -> dict:
+def _normalize_section_num(s: str) -> str:
+    """Strip § and whitespace for comparison, e.g. '3 §' → '3'."""
+    return s.strip().rstrip("§").strip()
+
+
+def _find_section(doc_elem: ET.Element, section_filter: str) -> Optional[ET.Element]:
+    """
+    Find the first <section> whose <num> matches section_filter.
+    Accepts bare numbers ('3'), Finnish form ('3 §'), or Swedish ('3 §').
+    Returns None if not found.
+    """
+    target = _normalize_section_num(section_filter)
+    for elem in doc_elem.iter(_tag("section")):
+        num_el = elem.find(_tag("num"))
+        if num_el is not None and num_el.text:
+            if _normalize_section_num(num_el.text) == target:
+                return elem
+    return None
+
+
+def _find_chapter(doc_elem: ET.Element, chapter_filter: str) -> Optional[ET.Element]:
+    """
+    Find the first <chapter> or <hcontainer> whose <num> matches chapter_filter.
+    """
+    target = _normalize_section_num(chapter_filter)
+    for tag_name in ("chapter", "hcontainer"):
+        for elem in doc_elem.iter(_tag(tag_name)):
+            num_el = elem.find(_tag("num"))
+            if num_el is not None and num_el.text:
+                if _normalize_section_num(num_el.text) == target:
+                    return elem
+    return None
+
+
+def _list_sections(doc_elem: ET.Element) -> List[str]:
+    """Return a list of section numbers present in the document."""
+    seen = []
+    for elem in doc_elem.iter(_tag("section")):
+        num_el = elem.find(_tag("num"))
+        if num_el is not None and num_el.text:
+            n = num_el.text.strip()
+            if n not in seen:
+                seen.append(n)
+    return seen
+
+
+def parse_akn_xml(
+    xml_content: str,
+    section_filter: Optional[str] = None,
+    chunk: int = 1,
+) -> dict:
     """
     Parse Akoma Ntoso XML and return a dict with:
       - title: str
@@ -203,13 +254,17 @@ def parse_akn_xml(xml_content: str) -> dict:
       - date_issued: str
       - language: str
       - doc_type: str  (act / judgment / doc)
-      - text: str  (full text, capped at CHAR_LIMIT)
-      - truncated: bool
+      - text: str      (requested chunk of the full text)
+      - chunk: int     (which chunk was returned, 1-based)
+      - total_chunks: int
+      - total_length: int
+      - truncated: bool  (True when document has more than one chunk)
+      - sections: list[str]  (available section numbers, only when section_filter used)
     """
     try:
         root = ET.fromstring(xml_content)
     except ET.ParseError as e:
-        return {"error": f"XML parse error: {e}", "text": ""}
+        return {"error": f"XML parse error: {e}", "text": "", "chunk": 1, "total_chunks": 1, "total_length": 0, "truncated": False}
 
     # Determine document element type
     act_el = root.find(_tag("act"))
@@ -218,7 +273,6 @@ def parse_akn_xml(xml_content: str) -> dict:
 
     doc_elem = act_el or judgment_el or doc_el
     if doc_elem is None:
-        # Try direct root
         doc_elem = root
 
     doc_type = "act" if act_el is not None else ("judgment" if judgment_el is not None else "doc")
@@ -233,8 +287,6 @@ def parse_akn_xml(xml_content: str) -> dict:
             meta["date_issued"] = frbrdate.get("date", "") if frbrdate is not None else ""
             frbrnumber = frbrwork.find(_tag("FRBRnumber"))
             meta["number"] = frbrnumber.get("value", "") if frbrnumber is not None else ""
-            frbryear = frbrwork.find(f"{_tag('FRBRdate')}")
-            # Extract year from date_issued
             meta["year"] = meta["date_issued"][:4] if meta.get("date_issued") else ""
 
         frbrexpr = identification.find(_tag("FRBRExpression"))
@@ -277,7 +329,56 @@ def parse_akn_xml(xml_content: str) -> dict:
         lang_map = {"fin": "suomi", "swe": "ruotsi"}
         header_lines.append(f"Kieli: {lang_map.get(meta['language'], meta['language'])}")
 
-    # Extract body text
+    # --- Section filtering ---
+    if section_filter:
+        matched = _find_section(doc_elem, section_filter)
+        if matched is None:
+            # Try chapter/hcontainer
+            matched = _find_chapter(doc_elem, section_filter)
+
+        if matched is None:
+            available = _list_sections(doc_elem)
+            available_str = ", ".join(available[:30])
+            if len(available) > 30:
+                available_str += f" … (yhteensä {len(available)} pykälää)"
+            return {
+                "error": (
+                    f"Pykälää/lukua '{section_filter}' ei löydy dokumentista. "
+                    f"Saatavilla olevat pykälät: {available_str or '(ei löydy)'}"
+                ),
+                "text": "",
+                "chunk": 1,
+                "total_chunks": 1,
+                "total_length": 0,
+                "truncated": False,
+                "title": title,
+                "number": doc_number or meta.get("number", ""),
+                "year": meta.get("year", ""),
+                "date_issued": meta.get("date_issued", ""),
+                "language": meta.get("language", ""),
+                "doc_type": doc_type,
+            }
+
+        section_lines = _extract_text_from_element(matched)
+        full_text = "\n".join(header_lines) + "\n\n" + "\n".join(section_lines)
+        full_text = full_text.strip()
+
+        # Section text is returned as-is (no chunking needed for a single section)
+        return {
+            "title": title,
+            "number": doc_number or meta.get("number", ""),
+            "year": meta.get("year", ""),
+            "date_issued": meta.get("date_issued", ""),
+            "language": meta.get("language", ""),
+            "doc_type": doc_type,
+            "text": full_text,
+            "chunk": 1,
+            "total_chunks": 1,
+            "total_length": len(full_text),
+            "truncated": False,
+        }
+
+    # --- Full document with chunked pagination ---
     text_lines = []
     body_el = doc_elem.find(_tag("body"))
     judgment_body_el = doc_elem.find(_tag("judgmentBody"))
@@ -290,10 +391,11 @@ def parse_akn_xml(xml_content: str) -> dict:
     full_text = "\n".join(header_lines) + "\n\n" + "\n".join(text_lines)
     full_text = full_text.strip()
 
-    truncated = False
-    if len(full_text) > CHAR_LIMIT:
-        full_text = full_text[:CHAR_LIMIT]
-        truncated = True
+    total_length = len(full_text)
+    total_chunks = max(1, (total_length + CHUNK_SIZE - 1) // CHUNK_SIZE)
+    chunk = max(1, min(chunk, total_chunks))
+    start = (chunk - 1) * CHUNK_SIZE
+    chunk_text = full_text[start: start + CHUNK_SIZE]
 
     return {
         "title": title,
@@ -302,8 +404,11 @@ def parse_akn_xml(xml_content: str) -> dict:
         "date_issued": meta.get("date_issued", ""),
         "language": meta.get("language", ""),
         "doc_type": doc_type,
-        "text": full_text,
-        "truncated": truncated,
+        "text": chunk_text,
+        "chunk": chunk,
+        "total_chunks": total_chunks,
+        "total_length": total_length,
+        "truncated": total_chunks > 1,
     }
 
 
@@ -319,7 +424,7 @@ def list_statutes(
     page: int = 1,
     limit: int = 10,
     doc_type: str = "statute",
-) -> list[dict]:
+) -> List[dict]:
     """
     Return a list of statute URIs from the /act/{doc_type}/list endpoint.
     Each item: {"akn_uri": str, "status": str}
@@ -339,7 +444,7 @@ def list_statutes(
 
 def fetch_statute_xml(
     year: int,
-    number: int | str,
+    number: Union[int, str],
     lang: str = "fin",
     doc_type: str = "statute",
 ) -> str:
@@ -355,7 +460,6 @@ def fetch_statute_xml(
         return r.text
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 404:
-            # Try with -001 suffix for old statutes
             url2 = f"{BASE_URL}/akn/fi/act/{doc_type}/{year}/{number}-001/{lang_ver}"
             try:
                 r2 = _get(url2)
@@ -371,7 +475,7 @@ def list_judgments(
     end_year: Optional[int] = None,
     page: int = 1,
     limit: int = 10,
-) -> list[dict]:
+) -> List[dict]:
     """
     Return a list of judgment URIs.
     Valid judgment_type values:
@@ -406,7 +510,7 @@ def list_docs(
     end_year: Optional[int] = None,
     page: int = 1,
     limit: int = 10,
-) -> list[dict]:
+) -> List[dict]:
     """
     Return a list of document URIs.
     Valid doc_type values: government-proposal, collective-agreement-general-applicability-decision,
@@ -440,6 +544,12 @@ def format_result(parsed: dict) -> str:
     if "error" in parsed:
         return f"Virhe: {parsed['error']}"
     text = parsed.get("text", "")
-    if parsed.get("truncated"):
-        text += f"\n\n[HUOM: Dokumentti on katkaistu. Alkuperäinen dokumentti on pidempi. Näytetään ensimmäiset {CHAR_LIMIT} merkkiä.]"
+    chunk = parsed.get("chunk", 1)
+    total_chunks = parsed.get("total_chunks", 1)
+    total_length = parsed.get("total_length", len(text))
+    if total_chunks > 1:
+        text += (
+            f"\n\n[OSA {chunk}/{total_chunks} | Dokumentin kokonaispituus: {total_length} merkkiä"
+            f" | Hae seuraava osa: lisää parametri chunk={chunk + 1}]"
+        )
     return text
