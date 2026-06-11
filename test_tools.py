@@ -14,6 +14,7 @@ from tools_finlex import (
     get_proposal,
     get_statute,
     search_decisions,
+    search_statute_text,
     search_statutes,
 )
 
@@ -233,6 +234,55 @@ async def run_tests():
         print(r3[:400], "\n")
     except Exception as e:
         failures.append(f"TEST 17 FAILED: {e}")
+        print(f"FAIL: {e}\n")
+
+    print("=== TEST 18: CURRENT consolidated text – not the 2002 original ===")
+    try:
+        result = await get_statute("1290/2002", section="6")
+        assert "1272/2006" in result, "Should reference CURRENT YEL (1272/2006)"
+        assert "468/1969" not in result, "Must NOT reference repealed YEL (468/1969)"
+        assert "ajantasainen" in result, "Should state the version is consolidated/current"
+        print("PASS — text is the consolidated current version (refs YEL 1272/2006)")
+        print(result[:300], "\n")
+    except Exception as e:
+        failures.append(f"TEST 18 FAILED: {e}")
+        print(f"FAIL: {e}\n")
+
+    time.sleep(1)
+
+    print("=== TEST 19: chapter-qualified address – RL 21:1 (tappo) ===")
+    try:
+        result = await get_statute("39/1889", section="21:1")
+        assert "[PART" not in result, "Single section should not be paginated"
+        assert "tapo" in result.lower() or "tappo" in result.lower(), f"Expected homicide provision, got: {result[:300]}"
+        print(f"PASS — RL 21:1 returned ({len(result)} chars)")
+        print(result[:400], "\n")
+    except Exception as e:
+        failures.append(f"TEST 19 FAILED: {e}")
+        print(f"FAIL: {e}\n")
+
+    time.sleep(1)
+
+    print("=== TEST 20: search_statute_text('1290/2002', 'yrittäjä') ===")
+    try:
+        result = await search_statute_text("1290/2002", "yrittäjä")
+        assert "1:6" in result, f"Expected address 1:6 in results: {result[:400]}"
+        assert "get_statute" in result, "Should suggest the follow-up call"
+        print("PASS — keyword search returns section addresses")
+        print(result[:600], "\n")
+    except Exception as e:
+        failures.append(f"TEST 20 FAILED: {e}")
+        print(f"FAIL: {e}\n")
+
+    print("=== TEST 21: cache – repeat call must be near-instant ===")
+    try:
+        t0 = time.monotonic()
+        await get_outline("1290/2002")
+        warm = time.monotonic() - t0
+        assert warm < 0.5, f"Cached call took {warm:.2f}s — cache not working"
+        print(f"PASS — cached outline call took {warm*1000:.0f} ms\n")
+    except Exception as e:
+        failures.append(f"TEST 21 FAILED: {e}")
         print(f"FAIL: {e}\n")
 
     print("=" * 50)

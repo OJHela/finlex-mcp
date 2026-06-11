@@ -30,6 +30,7 @@ from tools_finlex import (
     get_proposal,
     get_statute,
     search_decisions,
+    search_statute_text,
     search_statutes,
 )
 
@@ -63,24 +64,31 @@ icon = Icon(
 )
 
 INSTRUCTION_STRING = """Finlex – Finnish legal database (opendata.finlex.fi, CC BY 4.0).
+Statute texts are the consolidated CURRENT versions (amendments applied) when available.
 
 TOOLS:
-  find_statute("name or abbreviation")  → get citation from statute name e.g. "Työttömyysturvalaki"
-  get_outline("number/year")            → chapter/section index (use BEFORE reading long statutes)
-  get_statute("number/year")            → statute text, paginated if long
-  search_decisions(court)               → list decisions (court: "okv" or "dpo")
-  get_decision(year, number, court)     → single decision text
-  get_proposal(year, number)            → government proposal (HE) text
-  search_statutes(start_year, end_year) → list statute citations by year (NOT by name)
+  find_statute("name or abbreviation")      → citation from statute name e.g. "Työttömyysturvalaki"
+  search_statute_text(citation, "keyword")  → sections containing a Finnish keyword (FASTEST navigation)
+  get_outline(citation)                     → chapter/section index, no body text
+  get_statute(citation)                     → statute text, paginated if long
+  search_decisions(court)                   → list decisions (court: "okv" or "dpo")
+  get_decision(year, number, court)         → single decision text
+  get_proposal(year, number)                → government proposal (HE) text
+  search_statutes(start_year, end_year)     → list statute citations by year (NOT by name)
 
-RECOMMENDED WORKFLOW:
-  1. find_statute("name")               → get citation e.g. "1290/2002"
-  2. get_outline("1290/2002")           → see sections, find the right one
-  3. get_statute("1290/2002", section="6") → fetch only that section
+RECOMMENDED WORKFLOW (3 calls from question to answer):
+  1. find_statute("työttömyysturvalaki")            → "1290/2002"
+  2. search_statute_text("1290/2002", "yrittäjä")   → section address e.g. "1:6"
+  3. get_statute("1290/2002", section="1:6")        → exact current law text
+
+SECTION ADDRESSES:
+  • Laws numbered per chapter use "CHAPTER:SECTION" — Finnish citation RL 21:1 → section="21:1"
+  • Laws with continuous numbering use a plain number → section="6"
+  • Outline and search results always show the correct address form
 
 RULES:
   • Do NOT guess statute citation numbers — always use find_statute first
-  • search_statutes lists by year only, it cannot search by name
+  • Keywords must be Finnish or Swedish — English finds nothing
   • KKO and KHO rulings are NOT available; only "okv" and "dpo"
   • Long documents: use the exact next-call shown in [PART 1/N | NEXT: ...]"""
 
@@ -101,6 +109,7 @@ mcp = FastMCP(
 
 # All tools run automatically without user confirmation
 mcp.tool(meta={"requires_permission": False})(find_statute)
+mcp.tool(meta={"requires_permission": False})(search_statute_text)
 mcp.tool(meta={"requires_permission": False})(get_outline)
 mcp.tool(meta={"requires_permission": False})(get_statute)
 mcp.tool(meta={"requires_permission": False})(search_decisions)
