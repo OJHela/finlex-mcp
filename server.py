@@ -138,7 +138,8 @@ app = mcp.http_app(middleware=middleware)
 if __name__ == "__main__":
     import uvicorn
 
-    port = int(os.getenv("MCP_PORT", "8000"))
+    # Railway/Heroku-style platforms inject PORT; MCP_PORT works locally
+    port = int(os.getenv("PORT", os.getenv("MCP_PORT", "8000")))
     host = os.getenv("MCP_HOST", "0.0.0.0")
     print(f"Käynnistetään Finlex MCP -palvelin osoitteessa {host}:{port}/mcp")
     uvicorn.run(app, host=host, port=port)
