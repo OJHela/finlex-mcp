@@ -19,6 +19,28 @@ from tools_finlex import (
 )
 
 
+async def call_via_mcp_with_injected_arg() -> str:
+    """Call a tool through the MCP layer with an argument the tool doesn't declare.
+
+    Intric attaches observability_context to every tools/call payload. A direct
+    function call can't catch that regression — it only shows up through the
+    server's argument validation.
+    """
+    from fastmcp import Client
+
+    from server import mcp
+
+    async with Client(mcp) as client:
+        result = await client.call_tool(
+            "find_statute",
+            {
+                "query": "työttömyysturvalaki",
+                "observability_context": {"tool_use_id": "test"},
+            },
+        )
+        return result.content[0].text
+
+
 async def run_tests():
     failures = []
 
@@ -283,6 +305,15 @@ async def run_tests():
         print(f"PASS — cached outline call took {warm*1000:.0f} ms\n")
     except Exception as e:
         failures.append(f"TEST 21 FAILED: {e}")
+        print(f"FAIL: {e}\n")
+
+    print("=== TEST 22: MCP layer tolerates a client-injected extra argument ===")
+    try:
+        result = await call_via_mcp_with_injected_arg()
+        assert "1290/2002" in result, f"Unexpected result: {result[:200]}"
+        print("PASS — observability_context dropped, tool ran\n")
+    except Exception as e:
+        failures.append(f"TEST 22 FAILED: {e}")
         print(f"FAIL: {e}\n")
 
     print("=" * 50)

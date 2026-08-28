@@ -23,6 +23,7 @@ from starlette.responses import JSONResponse, PlainTextResponse
 
 load_dotenv()
 
+from middleware_compat import DropUnknownArgumentsMiddleware
 from tools_finlex import (
     find_statute,
     get_decision,
@@ -92,7 +93,7 @@ RULES:
   • KKO and KHO rulings are NOT available; only "okv" and "dpo"
   • Long documents: use the exact next-call shown in [PART 1/N | NEXT: ...]"""
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 WEBSITE_URL = "https://opendata.finlex.fi/"
 
 ####### SERVER CONFIGURATION #######
@@ -103,6 +104,9 @@ mcp = FastMCP(
     version=VERSION,
     website_url=WEBSITE_URL,
     icons=[icon],
+    # Intric adds observability_context to every tools/call payload; without this
+    # FastMCP rejects the call before the tool runs.
+    middleware=[DropUnknownArgumentsMiddleware()],
 )
 
 ####### TOOLS #######
